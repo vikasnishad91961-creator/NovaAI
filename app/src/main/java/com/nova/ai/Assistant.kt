@@ -69,7 +69,7 @@ class Assistant(private val ctx: Context) {
             }
             go(Intent(AlarmClock.ACTION_SET_TIMER)
                 .putExtra(AlarmClock.EXTRA_LENGTH, secs)
-                .putExtra(AlarmClock.EXTRA_MESSAGE, "Nova")
+                .putExtra(AlarmClock.EXTRA_MESSAGE, "NEXORA AI")
                 .putExtra(AlarmClock.EXTRA_SKIP_UI, true))
             return "Theek hai, $n ${u} ka timer laga diya."
         }
@@ -84,7 +84,7 @@ class Assistant(private val ctx: Context) {
             go(Intent(AlarmClock.ACTION_SET_ALARM)
                 .putExtra(AlarmClock.EXTRA_HOUR, h)
                 .putExtra(AlarmClock.EXTRA_MINUTES, min)
-                .putExtra(AlarmClock.EXTRA_MESSAGE, "Nova")
+                .putExtra(AlarmClock.EXTRA_MESSAGE, "NEXORA AI")
                 .putExtra(AlarmClock.EXTRA_SKIP_UI, true))
             return "Alarm ${"%02d:%02d".format(h, min)} ke liye set ho gaya."
         }
@@ -248,11 +248,11 @@ class Assistant(private val ctx: Context) {
         }
         val known = mem.summary().takeIf { mem.name != null || mem.city != null || mem.notes().isNotEmpty() } ?: ""
         val prompt = buildString {
-            append("You are Nova, a fast, friendly voice assistant. Reply briefly (1-3 sentences) in the same language the user used (Hindi, Hinglish or English). ")
+            append("You are NEXORA AI, a fast, friendly AI assistant. Reply briefly (1-3 sentences) in the same language the user used (Hindi, Hinglish or English). ")
             append("If asked for study help, explain step by step but simply.\n")
             if (known.isNotEmpty()) append("About the user:\n$known\n")
             if (imageCtx != null) append("The user just took a photo. $imageCtx\n")
-            append("User: $question\nNova:")
+            append("User: $question\nNEXORA AI:")
         }
         return llm.ask(prompt).ifEmpty { "Samajh nahi aaya, dobara bolo." }
     }

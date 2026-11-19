@@ -11,7 +11,7 @@ object Http {
         val c = URL(u).openConnection() as HttpURLConnection
         c.connectTimeout = 6000
         c.readTimeout = 8000
-        c.setRequestProperty("User-Agent", "NovaAI/1.0")
+        c.setRequestProperty("User-Agent", "NEXORA-AI/1.0")
         return try {
             c.inputStream.bufferedReader().use { it.readText() }
         } finally {

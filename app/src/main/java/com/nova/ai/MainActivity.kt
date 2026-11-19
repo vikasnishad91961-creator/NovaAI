@@ -80,7 +80,7 @@ class MainActivity : ComponentActivity() {
         perms.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CALL_PHONE, Manifest.permission.READ_CONTACTS))
         voice = Voice(this, onText = { process(it) }, onListening = { listening = it }, onSpeaking = { speaking = it })
         nova = Assistant(this)
-        msgs.add(false to "Namaste! Main Nova hoon. Mic dabao aur bolo.")
+        msgs.add(false to "Namaste! Main NEXORA AI hoon. Mic dabao aur bolo.")
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) { Screen() }
         }
@@ -112,7 +112,7 @@ class MainActivity : ComponentActivity() {
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text("NOVA", fontSize = 22.sp, color = Color(0xFF7DF9FF), letterSpacing = 8.sp)
+            Text("NEXORA AI", fontSize = 22.sp, color = Color(0xFF7DF9FF), letterSpacing = 8.sp)
             Orb(active = listening || speaking)
             Text(
                 when { listening -> "Sun raha hoon…"; speaking -> "Bol raha hoon…"; else -> "Tayyar" },
