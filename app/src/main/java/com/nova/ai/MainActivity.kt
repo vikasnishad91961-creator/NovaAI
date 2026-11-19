@@ -1,7 +1,14 @@
+
 package com.nova.ai
-import kotlinx.coroutines.delay
+
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -11,368 +18,598 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.lifecycleScope
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+data class Msg(
+    val text: String,
+    val isUser: Boolean,
+    val time: Long = System.currentTimeMillis()
+)
 
 class MainActivity : ComponentActivity() {
-    private lateinit var voice: Voice
-    private lateinit var nova: Assistant
-    private val msgs = mutableStateListOf<Pair<Boolean, String>>()
-    private var listening by mutableStateOf(false)
-    private var speaking by mutableStateOf(false)
-    private var imageCtx: String? = null
 
-    private val perms = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
-    private val camera = registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bmp ->
-        if (bmp != null) lifecycleScope.launch {
-            imageCtx = Vision.describe(bmp)
-            say("Photo mil gayi. Ab is ke baare mein sawal poochiye.")
+    private lateinit var assistant: Assistant
+    private var voice: Voice? = null
+
+    private var voiceTextCallback: ((String) -> Unit)? = null
+    private var listeningCallback: ((Boolean) -> Unit)? = null
+    private var imageCallback: ((Bitmap) -> Unit)? = null
+
+    private val cameraLauncher =
+        registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+            if (bitmap != null) {
+                imageCallback?.invoke(bitmap)
+            }
         }
-    }
+
+    private val cameraPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                cameraLauncher.launch(null)
+            } else {
+                Toast.makeText(this, "Camera permission denied", Toast.LENGTH_SHORT).show()
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        perms.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CALL_PHONE, Manifest.permission.READ_CONTACTS))
-        voice = Voice(this, onText = { process(it) }, onListening = { listening = it }, onSpeaking = { speaking = it })
-        nova = Assistant(this)
-        msgs.add(false to "Namaste! Main NEXORA AI hoon. Mic dabao aur bolo.")
+
+        assistant = Assistant(this)
+
+        voice = Voice(
+            this,
+            onText = { result ->
+                runOnUiThread {
+                    voiceTextCallback?.invoke(result)
+                }
+            },
+            onListening = { active ->
+                runOnUiThread {
+                    listeningCallback?.invoke(active)
+                }
+            },
+            onSpeaking = { }
+        )
+
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) { Screen() }
+            MaterialTheme {
+                var splash by remember { mutableStateOf(true) }
+
+                LaunchedEffect(Unit) {
+                    delay(2800)
+                    splash = false
+                }
+
+                if (splash) {
+                    SplashScreen()
+                } else {
+                    ChatScreen()
+                }
+            }
         }
     }
 
-    override fun onDestroy() { voice.destroy(); super.onDestroy() }
-
-    private fun say(text: String) { msgs.add(false to text); voice.speak(text) }
-
-    private fun process(text: String) {
-        if (text.isBlank()) return
-        msgs.add(true to text)
-        lifecycleScope.launch {
-            val reply = nova.handle(text, imageCtx)
-            imageCtx = null
-            say(reply)
+    private fun openCamera() {
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            cameraLauncher.launch(null)
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
         }
     }
 
-    
-@Composable
-private fun Screen() {
-    var showSplash by remember { mutableStateOf(true) }
-
-    LaunchedEffect(Unit) {
-        delay(3000)
-        showSplash = false
+    override fun onDestroy() {
+        voice?.destroy()
+        super.onDestroy()
     }
 
-    if (showSplash) {
-        SplashScreen()
-    } else {
-        ChatScreen()
-    }
-}
-
-@Composable
-private fun SplashScreen() {
-    val transition = rememberInfiniteTransition(label = "splash")
-
-    val pulse by transition.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse"
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFF020617),
-                        Color(0xFF101044),
-                        Color(0xFF090018)
-                    )
-                )
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
+    @Composable
+    private fun SplashScreen() {
         Box(
-            modifier = Modifier.size(210.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color(0xFF05071A),
+                            Color(0xFF111B42),
+                            Color(0xFF05071A)
+                        )
+                    )
+                ),
             contentAlignment = Alignment.Center
         ) {
-            Canvas(Modifier.fillMaxSize()) {
-                drawCircle(
-                    Brush.radialGradient(
-                        listOf(
-                            Color(0xAA00D9FF),
-                            Color(0x445B21B6),
-                            Color.Transparent
-                        )
-                    ),
-                    radius = size.minDimension / 2
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Orb(
+                    active = true,
+                    modifier = Modifier.size(130.dp)
                 )
 
-                drawCircle(
-                    Color(0xFF00D9FF),
-                    style = Stroke(3.dp.toPx()),
-                    radius = size.minDimension * 0.43f
+                Spacer(Modifier.height(25.dp))
+
+                Text(
+                    "NEXORA AI",
+                    color = Color.White,
+                    fontSize = 30.sp,
+                    fontWeight = FontWeight.ExtraBold
                 )
 
-                drawOval(
-                    Color(0xFFB44CFF),
-                    style = Stroke(4.dp.toPx()),
-                    topLeft = Offset(
-                        size.width * 0.04f,
-                        size.height * 0.35f
-                    ),
-                    size = Size(
-                        size.width * 0.92f,
-                        size.height * 0.30f
-                    )
+                Spacer(Modifier.height(8.dp))
+
+                Text(
+                    "ONE BRAIN. INFINITE INTELLIGENCE.",
+                    color = Color(0xFF7DF9FF),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(Modifier.height(30.dp))
+
+                CircularProgressIndicator(
+                    color = Color(0xFF00E5FF),
+                    strokeWidth = 3.dp
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    "INITIALIZING AI...",
+                    color = Color.LightGray,
+                    fontSize = 11.sp
                 )
             }
-
-            Text(
-                "N",
-                fontSize = (115 * pulse).sp,
-                color = Color(0xFF65E9FF),
-                letterSpacing = (-8).sp
-            )
-        }
-
-        Text(
-            "NEXORA AI",
-            modifier = Modifier.padding(top = 15.dp),
-            fontSize = 30.sp,
-            color = Color.White,
-            letterSpacing = 7.sp
-        )
-
-        Text(
-            "ONE BRAIN.",
-            modifier = Modifier.padding(top = 22.dp),
-            fontSize = 23.sp,
-            color = Color(0xFF48DFFF),
-            letterSpacing = 3.sp
-        )
-
-        Text(
-            "INFINITE INTELLIGENCE. 🚀",
-            modifier = Modifier.padding(top = 5.dp),
-            fontSize = 16.sp,
-            color = Color(0xFFC77DFF),
-            letterSpacing = 1.sp
-        )
-
-        Text(
-            "INITIALIZING AI...",
-            modifier = Modifier.padding(top = 45.dp),
-            fontSize = 12.sp,
-            color = Color(0xFF9AA4D6),
-            letterSpacing = 3.sp
-        )
-    }
-}
-
-@Composable
-private fun ChatScreen() {
-    var input by remember { mutableStateOf("") }
-    val list = rememberLazyListState()
-
-    LaunchedEffect(msgs.size) {
-        if (msgs.isNotEmpty()) {
-            list.animateScrollToItem(msgs.lastIndex)
         }
     }
 
-    Column(
-        Modifier.fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color(0xFF05071A), Color(0xFF0B1030))
-                )
-            )
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            "NEXORA AI",
-            fontSize = 22.sp,
-            color = Color(0xFF7DF9FF),
-            letterSpacing = 8.sp
-        )
+    @Composable
+    private fun ChatScreen() {
+        val prefs = remember {
+            getSharedPreferences("nexora_chat", Context.MODE_PRIVATE)
+        }
 
-        Orb(active = listening || speaking)
+        val scope = rememberCoroutineScope()
+        val listState = rememberLazyListState()
 
-        Text(
-            when {
-                listening -> "Sun raha hoon…"
-                speaking -> "Bol raha hoon…"
-                else -> "Tayyar"
-            },
-            color = Color(0xFF9AA4D6),
-            fontSize = 13.sp
-        )
+        var messages by remember { mutableStateOf(loadMessages(prefs)) }
+        var input by remember { mutableStateOf("") }
+        var thinking by remember { mutableStateOf(false) }
+        var listening by remember { mutableStateOf(false) }
 
-        LazyColumn(
-            Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp),
-            state = list,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            items(msgs) { (user, text) ->
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = if (user) Arrangement.End
-                    else Arrangement.Start
-                ) {
-                    Box(
-                        Modifier.widthIn(max = 300.dp)
-                            .background(
-                                if (user) Color(0xFF2B3A8C)
-                                else Color(0xFF151B45),
-                                RoundedCornerShape(14.dp)
-                            )
-                            .padding(10.dp)
-                    ) {
-                        Text(text, color = Color.White, fontSize = 15.sp)
-                    }
+        fun saveMessages() {
+            val array = JSONArray()
+
+            messages.forEach { msg ->
+                val obj = JSONObject()
+                obj.put("text", msg.text)
+                obj.put("user", msg.isUser)
+                obj.put("time", msg.time)
+                array.put(obj)
+            }
+
+            prefs.edit().putString("messages", array.toString()).apply()
+        }
+
+        fun addMessage(msg: Msg) {
+            messages = messages + msg
+            saveMessages()
+        }
+
+        fun askAI(question: String, bitmap: Bitmap? = null) {
+            val prompt = question.trim()
+            if ((prompt.isEmpty() && bitmap == null) || thinking) return
+
+            if (prompt.isNotEmpty()) {
+                addMessage(Msg(prompt, true))
+            }
+
+            input = ""
+            thinking = true
+
+            scope.launch {
+                try {
+                    val answer = assistant.handle(prompt, bitmap)
+                    addMessage(Msg(answer, false))
+                } catch (e: Exception) {
+                    addMessage(
+                        Msg(
+                            "माफ़ करना, अभी जवाब नहीं मिल पाया। दोबारा कोशिश करो।\n\n${e.message ?: "Unknown error"}",
+                            false
+                        )
+                    )
+                } finally {
+                    thinking = false
                 }
             }
         }
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = { input = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Yahan likho…") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(
-                    onSend = {
-                        process(input)
-                        input = ""
-                    }
-                )
-            )
+        voiceTextCallback = { spoken ->
+            input = spoken
+        }
 
-            Button(
-                onClick = { camera.launch(null) },
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+        listeningCallback = { active ->
+            listening = active
+        }
+
+        imageCallback = { bitmap ->
+            askAI("इस तस्वीर को ध्यान से देखकर समझाओ।", bitmap)
+        }
+
+        LaunchedEffect(messages.size, thinking) {
+            if (messages.isNotEmpty()) {
+                listState.animateScrollToItem(
+                    if (thinking) messages.size else messages.lastIndex
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF070A18))
+        ) {
+            // TOP BAR
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF10162E))
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("📷")
+                Orb(
+                    active = thinking,
+                    modifier = Modifier.size(43.dp)
+                )
+
+                Spacer(Modifier.width(12.dp))
+
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "NEXORA AI",
+                        color = Color.White,
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        if (thinking) "Thinking..." else "AI Assistant",
+                        color = Color(0xFF7DF9FF),
+                        fontSize = 11.sp
+                    )
+                }
+
+                Text(
+                    "🗑",
+                    fontSize = 22.sp,
+                    modifier = Modifier
+                        .clickable {
+                            messages = emptyList()
+                            saveMessages()
+                        }
+                        .padding(8.dp)
+                )
             }
 
-            Button(
-                onClick = {
-                    if (listening) voice.stopListening()
-                    else voice.listen()
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (listening)
-                        Color(0xFFD32F6B)
-                    else Color(0xFF00B8D4)
-                ),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+            // CHAT AREA
+            if (messages.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Orb(
+                            active = false,
+                            modifier = Modifier.size(105.dp)
+                        )
+
+                        Spacer(Modifier.height(20.dp))
+
+                        Text(
+                            "Hello! I'm NEXORA AI",
+                            color = Color.White,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        Text(
+                            "Ask me anything.",
+                            color = Color.LightGray,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                    state = listState,
+                    contentPadding = PaddingValues(vertical = 12.dp)
+                ) {
+                    items(messages) { msg ->
+                        MessageBubble(msg) {
+                            val clipboard =
+                                getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+
+                            clipboard.setPrimaryClip(
+                                ClipData.newPlainText("NEXORA AI", msg.text)
+                            )
+
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Message copied",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+
+                    if (thinking) {
+                        item {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(17.dp),
+                                    color = Color(0xFF00E5FF),
+                                    strokeWidth = 2.dp
+                                )
+
+                                Spacer(Modifier.width(10.dp))
+
+                                Text(
+                                    "NEXORA is thinking...",
+                                    color = Color(0xFF7DF9FF),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // QUICK PROMPTS
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(if (listening) "⏹" else "🎤")
+                listOf("Explain", "Ideas", "Translate").forEach { item ->
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(Color(0xFF17213E))
+                            .clickable {
+                                input = when (item) {
+                                    "Explain" -> "Explain this topic simply: "
+                                    "Ideas" -> "Give me creative ideas about "
+                                    else -> "Translate into Hindi: "
+                                }
+                            }
+                            .padding(horizontal = 13.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            item,
+                            color = Color(0xFF7DF9FF),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+
+            // MESSAGE INPUT
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF10162E))
+                    .padding(9.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "📷",
+                    fontSize = 22.sp,
+                    modifier = Modifier
+                        .clickable { openCamera() }
+                        .padding(6.dp)
+                )
+
+                BasicTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(Color(0xFF1A2340))
+                        .padding(horizontal = 14.dp, vertical = 13.dp),
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        color = Color.White,
+                        fontSize = 14.sp
+                    ),
+                    maxLines = 4,
+                    decorationBox = { innerTextField ->
+                        Box {
+                            if (input.isEmpty()) {
+                                Text(
+                                    "Message NEXORA...",
+                                    color = Color.Gray,
+                                    fontSize = 14.sp
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
+
+                Text(
+                    if (listening) "🔴" else "🎤",
+                    fontSize = 21.sp,
+                    modifier = Modifier
+                        .clickable {
+                            if (listening) {
+                                voice?.stopListening()
+                            } else {
+                                voice?.listen()
+                            }
+                        }
+                        .padding(6.dp)
+                )
+
+                Text(
+                    "➤",
+                    color = Color(0xFF00E5FF),
+                    fontSize = 25.sp,
+                    modifier = Modifier
+                        .clickable {
+                            askAI(input)
+                        }
+                        .padding(6.dp)
+                )
+            }
+
+            Text(
+                "NEXORA AI can make mistakes. Verify important information.",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF10162E))
+                    .padding(bottom = 7.dp),
+                color = Color.Gray,
+                fontSize = 9.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+
+    private fun loadMessages(
+        prefs: android.content.SharedPreferences
+    ): List<Msg> {
+        return try {
+            val array = JSONArray(
+                prefs.getString("messages", "[]")
+            )
+
+            List(array.length()) { index ->
+                val obj = array.getJSONObject(index)
+
+                Msg(
+                    text = obj.getString("text"),
+                    isUser = obj.getBoolean("user"),
+                    time = obj.optLong("time", System.currentTimeMillis())
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    @Composable
+    private fun MessageBubble(
+        msg: Msg,
+        onCopy: () -> Unit
+    ) {
+        val time = remember(msg.time) {
+            SimpleDateFormat(
+                "hh:mm a",
+                Locale.getDefault()
+            ).format(Date(msg.time))
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (msg.isUser) {
+                Arrangement.End
+            } else {
+                Arrangement.Start
+            }
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 310.dp)
+                    .padding(vertical = 5.dp)
+                    .clip(
+                        RoundedCornerShape(
+                            topStart = 18.dp,
+                            topEnd = 18.dp,
+                            bottomStart = if (msg.isUser) 18.dp else 4.dp,
+                            bottomEnd = if (msg.isUser) 4.dp else 18.dp
+                        )
+                    )
+                    .background(
+                        if (msg.isUser) {
+                            Color(0xFF244D78)
+                        } else {
+                            Color(0xFF17213A)
+                        }
+                    )
+                    .pointerInput(msg.text) {
+                        detectTapGestures(
+                            onLongPress = { onCopy() }
+                        )
+                    }
+                    .padding(13.dp)
+            ) {
+                Text(
+                    msg.text,
+                    color = Color.White,
+                    fontSize = 14.sp
+                )
+
+                Spacer(Modifier.height(6.dp))
+
+                Text(
+                    time,
+                    color = Color.LightGray,
+                    fontSize = 9.sp,
+                    modifier = Modifier.align(Alignment.End)
+                )
             }
         }
     }
 }
 
 @Composable
-fun Orb(active: Boolean) {
-    val t = rememberInfiniteTransition(label = "orb")
-    val angle by t.animateFloat(0f, 360f, infiniteRepeatable(tween(16000, easing = LinearEasing)), label = "a")
-    val pulse by t.animateFloat(0.96f, 1.06f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "p")
-    val pts = remember {
-        val n = 450
-        FloatArray(n * 3).also { a ->
-            val ga = PI * (3 - sqrt(5.0))
-            for (i in 0 until n) {
-                val y = 1 - 2f * i / (n - 1)
-                val r = sqrt(1 - y * y)
-                val th = ga * i
-                a[i * 3] = (cos(th) * r).toFloat(); a[i * 3 + 1] = y; a[i * 3 + 2] = (sin(th) * r).toFloat()
-            }
-        }
-    }
-    Canvas(Modifier.size(240.dp)) {
-        val c = center
-        val half = size.minDimension / 2
-        val r = half * 0.72f * (if (active) pulse else 1f)
-        drawCircle(Brush.radialGradient(listOf(Color(0x6600E5FF), Color.Transparent), c, half), half, c)
-        drawCircle(Brush.radialGradient(listOf(Color(0xFF1B2A6B), Color(0xFF05071A)), c - Offset(r * .3f, r * .3f), r * 1.3f), r, c)
-        val a = Math.toRadians(angle.toDouble()); val ca = cos(a).toFloat(); val sa = sin(a).toFloat()
-        val tilt = 0.45f; val ct = cos(tilt); val st = sin(tilt)
-        for (i in 0 until pts.size / 3) {
-            val x = pts[i * 3]; val y = pts[i * 3 + 1]; val z = pts[i * 3 + 2]
-            val x1 = x * ca + z * sa; val z1 = -x * sa + z * ca
-            val y2 = y * ct - z1 * st; val z2 = y * st + z1 * ct
-            val d = (z2 + 1f) / 2f
-            val col = if (i % 3 == 0) Color(0xFFB388FF) else Color(0xFF7DF9FF)
-            drawCircle(col.copy(alpha = 0.15f + 0.85f * d), 1.2f + 2.6f * d, Offset(c.x + x1 * r, c.y + y2 * r))
-        }
-        val ringW = half * 1.7f
-        rotate(angle * 2, c) {
-            drawOval(Color(0x887DF9FF), Offset(c.x - ringW / 2, c.y - ringW * 0.16f), Size(ringW, ringW * 0.32f), style = Stroke(2.5f))
-        }
-        rotate(-angle * 1.4f + 60f, c) {
-            drawOval(Color(0x88B388FF), Offset(c.x - ringW / 2, c.y - ringW * 0.16f), Size(ringW, ringW * 0.32f), style = Stroke(2f))
-        }
-    }
-}
+fun Orb(
+    active: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val transition = rememberInfiniteTransition(label = "nexora_orb")
+
+    val angle by transition.
