@@ -76,7 +76,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var assistant: Assistant
     private var voice: Voice? = null
 
-    // UI state (activity level, taaki callbacks safe rahein)
     private val messages = mutableStateListOf<Msg>()
     private var input by mutableStateOf("")
     private var thinking by mutableStateOf(false)
@@ -212,7 +211,6 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             try {
-                // Photo ho to pehle Vision se description banao, phir Assistant ko do
                 val imageCtx = bitmap?.let { Vision.describe(it) }
                 val answer = assistant.handle(prompt, imageCtx)
                 addMessage(Msg(answer, false))
@@ -565,4 +563,8 @@ class MainActivity : ComponentActivity() {
                     .background(
                         if (msg.isUser) Color(0xFF244D78) else Color(0xFF17213A)
                     )
-                    .pointer
+                    .pointerInput(msg.text) {
+                        detectTapGestures(onLongPress = { onCopy() })
+                    }
+                    .padding(13.dp)
+   
