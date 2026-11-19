@@ -1,5 +1,5 @@
 package com.nova.ai
-
+import kotlinx.coroutines.delay
 import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -100,55 +100,240 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Composable
-    private fun Screen() {
-        var input by remember { mutableStateOf("") }
-        val list = rememberLazyListState()
-        LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) list.animateScrollToItem(msgs.lastIndex) }
+    
+@Composable
+private fun Screen() {
+    var showSplash by remember { mutableStateOf(true) }
 
-        Column(
-            Modifier.fillMaxSize()
-                .background(Brush.verticalGradient(listOf(Color(0xFF05071A), Color(0xFF0B1030))))
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+    LaunchedEffect(Unit) {
+        delay(3000)
+        showSplash = false
+    }
+
+    if (showSplash) {
+        SplashScreen()
+    } else {
+        ChatScreen()
+    }
+}
+
+@Composable
+private fun SplashScreen() {
+    val transition = rememberInfiniteTransition(label = "splash")
+
+    val pulse by transition.animateFloat(
+        initialValue = 0.92f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse"
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF020617),
+                        Color(0xFF101044),
+                        Color(0xFF090018)
+                    )
+                )
+            ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier.size(210.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Text("NEXORA AI", fontSize = 22.sp, color = Color(0xFF7DF9FF), letterSpacing = 8.sp)
-            Orb(active = listening || speaking)
+            Canvas(Modifier.fillMaxSize()) {
+                drawCircle(
+                    Brush.radialGradient(
+                        listOf(
+                            Color(0xAA00D9FF),
+                            Color(0x445B21B6),
+                            Color.Transparent
+                        )
+                    ),
+                    radius = size.minDimension / 2
+                )
+
+                drawCircle(
+                    Color(0xFF00D9FF),
+                    style = Stroke(3.dp.toPx()),
+                    radius = size.minDimension * 0.43f
+                )
+
+                drawOval(
+                    Color(0xFFB44CFF),
+                    style = Stroke(4.dp.toPx()),
+                    topLeft = Offset(
+                        size.width * 0.04f,
+                        size.height * 0.35f
+                    ),
+                    size = Size(
+                        size.width * 0.92f,
+                        size.height * 0.30f
+                    )
+                )
+            }
+
             Text(
-                when { listening -> "Sun raha hoon…"; speaking -> "Bol raha hoon…"; else -> "Tayyar" },
-                color = Color(0xFF9AA4D6), fontSize = 13.sp
+                "N",
+                fontSize = (115 * pulse).sp,
+                color = Color(0xFF65E9FF),
+                letterSpacing = (-8).sp
             )
-            LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp), state = list,
-                verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(msgs) { (user, text) ->
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (user) Arrangement.End else Arrangement.Start) {
-                        Box(
-                            Modifier.widthIn(max = 300.dp)
-                                .background(if (user) Color(0xFF2B3A8C) else Color(0xFF151B45), RoundedCornerShape(14.dp))
-                                .padding(10.dp)
-                        ) { Text(text, color = Color.White, fontSize = 15.sp) }
+        }
+
+        Text(
+            "NEXORA AI",
+            modifier = Modifier.padding(top = 15.dp),
+            fontSize = 30.sp,
+            color = Color.White,
+            letterSpacing = 7.sp
+        )
+
+        Text(
+            "ONE BRAIN.",
+            modifier = Modifier.padding(top = 22.dp),
+            fontSize = 23.sp,
+            color = Color(0xFF48DFFF),
+            letterSpacing = 3.sp
+        )
+
+        Text(
+            "INFINITE INTELLIGENCE. 🚀",
+            modifier = Modifier.padding(top = 5.dp),
+            fontSize = 16.sp,
+            color = Color(0xFFC77DFF),
+            letterSpacing = 1.sp
+        )
+
+        Text(
+            "INITIALIZING AI...",
+            modifier = Modifier.padding(top = 45.dp),
+            fontSize = 12.sp,
+            color = Color(0xFF9AA4D6),
+            letterSpacing = 3.sp
+        )
+    }
+}
+
+@Composable
+private fun ChatScreen() {
+    var input by remember { mutableStateOf("") }
+    val list = rememberLazyListState()
+
+    LaunchedEffect(msgs.size) {
+        if (msgs.isNotEmpty()) {
+            list.animateScrollToItem(msgs.lastIndex)
+        }
+    }
+
+    Column(
+        Modifier.fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF05071A), Color(0xFF0B1030))
+                )
+            )
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            "NEXORA AI",
+            fontSize = 22.sp,
+            color = Color(0xFF7DF9FF),
+            letterSpacing = 8.sp
+        )
+
+        Orb(active = listening || speaking)
+
+        Text(
+            when {
+                listening -> "Sun raha hoon…"
+                speaking -> "Bol raha hoon…"
+                else -> "Tayyar"
+            },
+            color = Color(0xFF9AA4D6),
+            fontSize = 13.sp
+        )
+
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp),
+            state = list,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            items(msgs) { (user, text) ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = if (user) Arrangement.End
+                    else Arrangement.Start
+                ) {
+                    Box(
+                        Modifier.widthIn(max = 300.dp)
+                            .background(
+                                if (user) Color(0xFF2B3A8C)
+                                else Color(0xFF151B45),
+                                RoundedCornerShape(14.dp)
+                            )
+                            .padding(10.dp)
+                    ) {
+                        Text(text, color = Color.White, fontSize = 15.sp)
                     }
                 }
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(
-                    value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f),
-                    placeholder = { Text("Yahan likho…") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { process(input); input = "" })
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Yahan likho…") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(
+                    onSend = {
+                        process(input)
+                        input = ""
+                    }
                 )
-                Button(onClick = { camera.launch(null) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)) { Text("📷") }
-                Button(
-                    onClick = { if (listening) voice.stopListening() else voice.listen() },
-                    colors = ButtonDefaults.buttonColors(containerColor = if (listening) Color(0xFFD32F6B) else Color(0xFF00B8D4)),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
-                ) { Text(if (listening) "⏹" else "🎤") }
+            )
+
+            Button(
+                onClick = { camera.launch(null) },
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+            ) {
+                Text("📷")
+            }
+
+            Button(
+                onClick = {
+                    if (listening) voice.stopListening()
+                    else voice.listen()
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (listening)
+                        Color(0xFFD32F6B)
+                    else Color(0xFF00B8D4)
+                ),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)
+            ) {
+                Text(if (listening) "⏹" else "🎤")
             }
         }
     }
 }
 
-/** Ghoomta hua 3D golaa: Fibonacci sphere ke points + orbit rings. */
 @Composable
 fun Orb(active: Boolean) {
     val t = rememberInfiniteTransition(label = "orb")
