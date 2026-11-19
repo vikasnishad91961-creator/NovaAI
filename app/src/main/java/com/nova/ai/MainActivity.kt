@@ -1,10 +1,10 @@
-
 package com.nova.ai
 
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -18,6 +18,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -28,20 +29,30 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -49,6 +60,10 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 data class Msg(
     val text: String,
@@ -61,14 +76,25 @@ class MainActivity : ComponentActivity() {
     private lateinit var assistant: Assistant
     private var voice: Voice? = null
 
-    private var voiceTextCallback: ((String) -> Unit)? = null
-    private var listeningCallback: ((Boolean) -> Unit)? = null
-    private var imageCallback: ((Bitmap) -> Unit)? = null
+    // UI state (activity level, taaki callbacks safe rahein)
+    private val messages = mutableStateListOf<Msg>()
+    private var input by mutableStateOf("")
+    private var thinking by mutableStateOf(false)
+    private var listening by mutableStateOf(false)
+    private var speaking by mutableStateOf(false)
+    private var muted by mutableStateOf(false)
+
+    private val prefs: SharedPreferences by lazy {
+        getSharedPreferences("nexora_chat", Context.MODE_PRIVATE)
+    }
+
+    private val permissions =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
     private val cameraLauncher =
         registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
             if (bitmap != null) {
-                imageCallback?.invoke(bitmap)
+                askAI("इस तस्वीर को ध्यान से देखकर समझाओ।", bitmap)
             }
         }
 
@@ -83,26 +109,29 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        permissions.launch(
+            arrayOf(
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.CALL_PHONE,
+                Manifest.permission.READ_CONTACTS
+            )
+        )
 
         assistant = Assistant(this)
 
         voice = Voice(
             this,
-            onText = { result ->
-                runOnUiThread {
-                    voiceTextCallback?.invoke(result)
-                }
-            },
-            onListening = { active ->
-                runOnUiThread {
-                    listeningCallback?.invoke(active)
-                }
-            },
-            onSpeaking = { }
+            onText = { result -> runOnUiThread { askAI(result) } },
+            onListening = { active -> runOnUiThread { listening = active } },
+            onSpeaking = { active -> runOnUiThread { speaking = active } }
         )
 
+        loadMessages()
+
         setContent {
-            MaterialTheme {
+            MaterialTheme(colorScheme = darkColorScheme()) {
                 var splash by remember { mutableStateOf(true) }
 
                 LaunchedEffect(Unit) {
@@ -110,25 +139,8 @@ class MainActivity : ComponentActivity() {
                     splash = false
                 }
 
-                if (splash) {
-                    SplashScreen()
-                } else {
-                    ChatScreen()
-                }
+                if (splash) SplashScreen() else ChatScreen()
             }
-        }
-    }
-
-    private fun openCamera() {
-        if (
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            cameraLauncher.launch(null)
-        } else {
-            cameraPermission.launch(Manifest.permission.CAMERA)
         }
     }
 
@@ -137,6 +149,116 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    // ---------------- Logic ----------------
+
+    private fun saveMessages() {
+        try {
+            val array = JSONArray()
+            messages.takeLast(100).forEach { msg ->
+                array.put(
+                    JSONObject()
+                        .put("text", msg.text)
+                        .put("user", msg.isUser)
+                        .put("time", msg.time)
+                )
+            }
+            prefs.edit().putString("messages", array.toString()).apply()
+        } catch (e: Exception) {
+            // save fail ho to app crash na ho
+        }
+    }
+
+    private fun loadMessages() {
+        try {
+            val array = JSONArray(prefs.getString("messages", "[]"))
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                messages.add(
+                    Msg(
+                        text = obj.getString("text"),
+                        isUser = obj.getBoolean("user"),
+                        time = obj.optLong("time", System.currentTimeMillis())
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            messages.clear()
+        }
+    }
+
+    private fun addMessage(msg: Msg) {
+        messages.add(msg)
+        saveMessages()
+    }
+
+    private fun clearChat() {
+        messages.clear()
+        saveMessages()
+    }
+
+    private fun copyToClipboard(text: String) {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("NEXORA AI", text))
+        Toast.makeText(this, "Message copied", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun askAI(question: String, bitmap: Bitmap? = null) {
+        val prompt = question.trim()
+        if ((prompt.isEmpty() && bitmap == null) || thinking) return
+
+        if (prompt.isNotEmpty()) addMessage(Msg(prompt, true))
+        input = ""
+        thinking = true
+
+        lifecycleScope.launch {
+            try {
+                // Photo ho to pehle Vision se description banao, phir Assistant ko do
+                val imageCtx = bitmap?.let { Vision.describe(it) }
+                val answer = assistant.handle(prompt, imageCtx)
+                addMessage(Msg(answer, false))
+                if (!muted) voice?.speak(answer)
+            } catch (e: Exception) {
+                addMessage(
+                    Msg(
+                        "माफ़ करना, अभी जवाब नहीं मिल पाया। दोबारा कोशिश करो।\n\n${e.message ?: "Unknown error"}",
+                        false
+                    )
+                )
+            } finally {
+                thinking = false
+            }
+        }
+    }
+
+    private fun toggleMic() {
+        if (listening) {
+            voice?.stopListening()
+            return
+        }
+        val granted = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!granted) {
+            permissions.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+            Toast.makeText(this, "Mic permission allow kijiye", Toast.LENGTH_SHORT).show()
+            return
+        }
+        voice?.listen()
+    }
+
+    private fun openCamera() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            cameraLauncher.launch(null)
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    // ---------------- UI ----------------
+
     @Composable
     private fun SplashScreen() {
         Box(
@@ -144,20 +266,13 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        listOf(
-                            Color(0xFF05071A),
-                            Color(0xFF111B42),
-                            Color(0xFF05071A)
-                        )
+                        listOf(Color(0xFF05071A), Color(0xFF111B42), Color(0xFF05071A))
                     )
                 ),
             contentAlignment = Alignment.Center
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Orb(
-                    active = true,
-                    modifier = Modifier.size(130.dp)
-                )
+                Orb(active = true, modifier = Modifier.size(150.dp))
 
                 Spacer(Modifier.height(25.dp))
 
@@ -165,13 +280,14 @@ class MainActivity : ComponentActivity() {
                     "NEXORA AI",
                     color = Color.White,
                     fontSize = 30.sp,
-                    fontWeight = FontWeight.ExtraBold
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 6.sp
                 )
 
                 Spacer(Modifier.height(8.dp))
 
                 Text(
-                    "ONE BRAIN. INFINITE INTELLIGENCE.",
+                    "ONE BRAIN. INFINITE INTELLIGENCE. 🚀",
                     color = Color(0xFF7DF9FF),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
@@ -186,100 +302,27 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(Modifier.height(12.dp))
 
-                Text(
-                    "INITIALIZING AI...",
-                    color = Color.LightGray,
-                    fontSize = 11.sp
-                )
+                Text("INITIALIZING AI...", color = Color.LightGray, fontSize = 11.sp)
             }
         }
     }
 
     @Composable
     private fun ChatScreen() {
-        val prefs = remember {
-            getSharedPreferences("nexora_chat", Context.MODE_PRIVATE)
-        }
-
-        val scope = rememberCoroutineScope()
         val listState = rememberLazyListState()
 
-        var messages by remember { mutableStateOf(loadMessages(prefs)) }
-        var input by remember { mutableStateOf("") }
-        var thinking by remember { mutableStateOf(false) }
-        var listening by remember { mutableStateOf(false) }
-
-        fun saveMessages() {
-            val array = JSONArray()
-
-            messages.forEach { msg ->
-                val obj = JSONObject()
-                obj.put("text", msg.text)
-                obj.put("user", msg.isUser)
-                obj.put("time", msg.time)
-                array.put(obj)
-            }
-
-            prefs.edit().putString("messages", array.toString()).apply()
-        }
-
-        fun addMessage(msg: Msg) {
-            messages = messages + msg
-            saveMessages()
-        }
-
-        fun askAI(question: String, bitmap: Bitmap? = null) {
-            val prompt = question.trim()
-            if ((prompt.isEmpty() && bitmap == null) || thinking) return
-
-            if (prompt.isNotEmpty()) {
-                addMessage(Msg(prompt, true))
-            }
-
-            input = ""
-            thinking = true
-
-            scope.launch {
-                try {
-                    val answer = assistant.handle(prompt, bitmap)
-                    addMessage(Msg(answer, false))
-                } catch (e: Exception) {
-                    addMessage(
-                        Msg(
-                            "माफ़ करना, अभी जवाब नहीं मिल पाया। दोबारा कोशिश करो।\n\n${e.message ?: "Unknown error"}",
-                            false
-                        )
-                    )
-                } finally {
-                    thinking = false
-                }
-            }
-        }
-
-        voiceTextCallback = { spoken ->
-            input = spoken
-        }
-
-        listeningCallback = { active ->
-            listening = active
-        }
-
-        imageCallback = { bitmap ->
-            askAI("इस तस्वीर को ध्यान से देखकर समझाओ।", bitmap)
-        }
-
         LaunchedEffect(messages.size, thinking) {
-            if (messages.isNotEmpty()) {
-                listState.animateScrollToItem(
-                    if (thinking) messages.size else messages.lastIndex
-                )
-            }
+            val count = messages.size + if (thinking) 1 else 0
+            if (count > 0) listState.animateScrollToItem(count - 1)
         }
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0xFF070A18))
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
         ) {
             // TOP BAR
             Row(
@@ -290,8 +333,8 @@ class MainActivity : ComponentActivity() {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Orb(
-                    active = thinking,
-                    modifier = Modifier.size(43.dp)
+                    active = thinking || listening || speaking,
+                    modifier = Modifier.size(44.dp)
                 )
 
                 Spacer(Modifier.width(12.dp))
@@ -303,22 +346,31 @@ class MainActivity : ComponentActivity() {
                         fontSize = 19.sp,
                         fontWeight = FontWeight.Bold
                     )
-
                     Text(
-                        if (thinking) "Thinking..." else "AI Assistant",
+                        when {
+                            listening -> "Sun raha hoon…"
+                            thinking -> "Thinking…"
+                            speaking -> "Bol raha hoon…"
+                            else -> "AI Assistant"
+                        },
                         color = Color(0xFF7DF9FF),
                         fontSize = 11.sp
                     )
                 }
 
                 Text(
+                    if (muted) "🔇" else "🔊",
+                    fontSize = 22.sp,
+                    modifier = Modifier
+                        .clickable { muted = !muted }
+                        .padding(8.dp)
+                )
+
+                Text(
                     "🗑",
                     fontSize = 22.sp,
                     modifier = Modifier
-                        .clickable {
-                            messages = emptyList()
-                            saveMessages()
-                        }
+                        .clickable { clearChat() }
                         .padding(8.dp)
                 )
             }
@@ -332,24 +384,21 @@ class MainActivity : ComponentActivity() {
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Orb(
-                            active = false,
-                            modifier = Modifier.size(105.dp)
-                        )
+                        Orb(active = false, modifier = Modifier.size(150.dp))
 
                         Spacer(Modifier.height(20.dp))
 
                         Text(
-                            "Hello! I'm NEXORA AI",
+                            "Namaste! Main NEXORA AI hoon",
                             color = Color.White,
-                            fontSize = 22.sp,
+                            fontSize = 21.sp,
                             fontWeight = FontWeight.Bold
                         )
 
                         Spacer(Modifier.height(8.dp))
 
                         Text(
-                            "Ask me anything.",
+                            "Mic dabao ya kuch bhi poochho.",
                             color = Color.LightGray,
                             fontSize = 13.sp
                         )
@@ -365,20 +414,7 @@ class MainActivity : ComponentActivity() {
                     contentPadding = PaddingValues(vertical = 12.dp)
                 ) {
                     items(messages) { msg ->
-                        MessageBubble(msg) {
-                            val clipboard =
-                                getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-
-                            clipboard.setPrimaryClip(
-                                ClipData.newPlainText("NEXORA AI", msg.text)
-                            )
-
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Message copied",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
+                        MessageBubble(msg) { copyToClipboard(msg.text) }
                     }
 
                     if (thinking) {
@@ -392,9 +428,7 @@ class MainActivity : ComponentActivity() {
                                     color = Color(0xFF00E5FF),
                                     strokeWidth = 2.dp
                                 )
-
                                 Spacer(Modifier.width(10.dp))
-
                                 Text(
                                     "NEXORA is thinking...",
                                     color = Color(0xFF7DF9FF),
@@ -427,11 +461,7 @@ class MainActivity : ComponentActivity() {
                             }
                             .padding(horizontal = 13.dp, vertical = 8.dp)
                     ) {
-                        Text(
-                            item,
-                            color = Color(0xFF7DF9FF),
-                            fontSize = 11.sp
-                        )
+                        Text(item, color = Color(0xFF7DF9FF), fontSize = 11.sp)
                     }
                 }
             }
@@ -460,11 +490,11 @@ class MainActivity : ComponentActivity() {
                         .clip(RoundedCornerShape(22.dp))
                         .background(Color(0xFF1A2340))
                         .padding(horizontal = 14.dp, vertical = 13.dp),
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        color = Color.White,
-                        fontSize = 14.sp
-                    ),
+                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                    cursorBrush = SolidColor(Color(0xFF00E5FF)),
                     maxLines = 4,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { askAI(input) }),
                     decorationBox = { innerTextField ->
                         Box {
                             if (input.isEmpty()) {
@@ -483,13 +513,7 @@ class MainActivity : ComponentActivity() {
                     if (listening) "🔴" else "🎤",
                     fontSize = 21.sp,
                     modifier = Modifier
-                        .clickable {
-                            if (listening) {
-                                voice?.stopListening()
-                            } else {
-                                voice?.listen()
-                            }
-                        }
+                        .clickable { toggleMic() }
                         .padding(6.dp)
                 )
 
@@ -498,9 +522,7 @@ class MainActivity : ComponentActivity() {
                     color = Color(0xFF00E5FF),
                     fontSize = 25.sp,
                     modifier = Modifier
-                        .clickable {
-                            askAI(input)
-                        }
+                        .clickable { askAI(input) }
                         .padding(6.dp)
                 )
             }
@@ -518,47 +540,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun loadMessages(
-        prefs: android.content.SharedPreferences
-    ): List<Msg> {
-        return try {
-            val array = JSONArray(
-                prefs.getString("messages", "[]")
-            )
-
-            List(array.length()) { index ->
-                val obj = array.getJSONObject(index)
-
-                Msg(
-                    text = obj.getString("text"),
-                    isUser = obj.getBoolean("user"),
-                    time = obj.optLong("time", System.currentTimeMillis())
-                )
-            }
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
     @Composable
-    private fun MessageBubble(
-        msg: Msg,
-        onCopy: () -> Unit
-    ) {
+    private fun MessageBubble(msg: Msg, onCopy: () -> Unit) {
         val time = remember(msg.time) {
-            SimpleDateFormat(
-                "hh:mm a",
-                Locale.getDefault()
-            ).format(Date(msg.time))
+            SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(msg.time))
         }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = if (msg.isUser) {
-                Arrangement.End
-            } else {
-                Arrangement.Start
-            }
+            horizontalArrangement = if (msg.isUser) Arrangement.End else Arrangement.Start
         ) {
             Column(
                 modifier = Modifier
@@ -573,43 +563,6 @@ class MainActivity : ComponentActivity() {
                         )
                     )
                     .background(
-                        if (msg.isUser) {
-                            Color(0xFF244D78)
-                        } else {
-                            Color(0xFF17213A)
-                        }
+                        if (msg.isUser) Color(0xFF244D78) else Color(0xFF17213A)
                     )
-                    .pointerInput(msg.text) {
-                        detectTapGestures(
-                            onLongPress = { onCopy() }
-                        )
-                    }
-                    .padding(13.dp)
-            ) {
-                Text(
-                    msg.text,
-                    color = Color.White,
-                    fontSize = 14.sp
-                )
-
-                Spacer(Modifier.height(6.dp))
-
-                Text(
-                    time,
-                    color = Color.LightGray,
-                    fontSize = 9.sp,
-                    modifier = Modifier.align(Alignment.End)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun Orb(
-    active: Boolean,
-    modifier: Modifier = Modifier
-) {
-    val transition = rememberInfiniteTransition(label = "nexora_orb")
-
-    val angle by transition.
+                    .pointer
